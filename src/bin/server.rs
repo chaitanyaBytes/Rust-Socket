@@ -5,50 +5,57 @@ use tokio::net::TcpListener;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
-    loop {
-        let (mut socket, _) = listener.accept().await?;
-        println!("New client connected.");
+    let (socket, _) = listener.accept().await?;
+    let (mut reader, mut writer) = socket.into_split();
+    println!("New client connected.");
 
-        tokio::spawn(async move {
-            let mut buf = [0; 1024];
-            let stdin = io::stdin();
-            let mut reader = io::BufReader::new(stdin);
-            let mut input = String::new();
+    let read_task = tokio::spawn(async move {
+        let mut buf = [0; 1024];
 
-            // In a loop, read data from the socket and write the data back.
-            loop {
-                match socket.read(&mut buf).await {
-                    // socket closed
-                    Ok(0) => {
-                        println!("Client disconnected.");
-                        return;
-                    }
-                    Ok(n) => {
-                        println!("Received: {}", String::from_utf8_lossy(&buf[..n]));
-                    }
-                    Err(e) => {
-                        eprintln!("failed to read from socket; err = {:?}", e);
-                        return;
-                    }
-                };
-
-                input.clear();
-
-                if let Err(e) = reader.read_line(&mut input).await {
-                    eprintln!("failed to read; err = {:?}", e);
-                    return;
-                }
-
-                if input.trim() == "quit" {
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => {
+                    println!("Client disconnected");
                     break;
                 }
-
-                // Write the data back
-                if let Err(e) = socket.write_all(input.as_bytes()).await {
-                    eprintln!("failed to write to socket; err = {:?}", e);
-                    return;
+                Ok(n) => {
+                    println!("client: {}", String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(e) => {
+                    eprintln!("failed to read from socket; err = {:?}", e);
+                    break;
                 }
             }
-        });
-    }
+        }
+    });
+
+    let write_task = tokio::spawn(async move {
+        let stdin = io::stdin();
+        let mut reader_buffer = io::BufReader::new(stdin);
+        let mut input = String::new();
+
+        loop {
+            input.clear();
+
+            if let Err(e) = reader_buffer.read_line(&mut input).await {
+                eprintln!("failed to read; err = {:?}", e);
+                break;
+            }
+
+            if input.trim() == "quit" {
+                break;
+            }
+
+            // Write the data back
+            if let Err(e) = writer.write_all(input.as_bytes()).await {
+                eprintln!("failed to write to socket; err = {:?}", e);
+                break;
+            }
+        }
+    });
+
+    // Wait for both tasks to complete
+    let _ = tokio::try_join!(read_task, write_task);
+
+    Ok(())
 }

@@ -3,33 +3,60 @@ use tokio::net::TcpStream;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+    let stream = TcpStream::connect("127.0.0.1:8080").await?;
     println!("Connection established with the server.");
-    let stdin = io::stdin();
-    let mut reader = io::BufReader::new(stdin);
-    let mut input = String::new();
-    let mut buf = [0; 1024];
 
-    loop {
-        input.clear();
+    let (mut reader, mut writer) = stream.into_split();
 
-        println!("Type a message (or 'quit' to exit):");
-        reader.read_line(&mut input).await?;
-        if input.trim() == "quit" {
-            break;
+    // Task for reading messages from server
+    let read_task = tokio::spawn(async move {
+        let mut buf = [0; 1024];
+
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => {
+                    println!("Client disconnected");
+                    break;
+                }
+                Ok(n) => {
+                    println!("server: {}", String::from_utf8_lossy(&buf[..n]));
+                }
+                Err(e) => {
+                    eprintln!("failed to read from socket; err = {:?}", e);
+                    break;
+                }
+            }
         }
+    });
 
-        // Send to server
-        stream.write_all(input.as_bytes()).await?;
+    // Task for sending messages to server
+    let write_task = tokio::spawn(async move {
+        let mut input = String::new();
+        let stdin = io::stdin();
+        let mut reader_buffer = io::BufReader::new(stdin);
 
-        // Wait for server's reply
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            println!("Server closed connection");
-            break;
+        loop {
+            input.clear();
+
+            // println!("Type a message (or 'quit' to exit):");
+
+            if let Err(e) = reader_buffer.read_line(&mut input).await {
+                eprintln!("failed to read; err = {:?}", e);
+                break;
+            }
+
+            if input.trim() == "quit" {
+                break;
+            }
+
+            if writer.write_all(input.as_bytes()).await.is_err() {
+                break; // Connection closed
+            }
         }
-        println!("Server replied: {}", String::from_utf8_lossy(&buf[..n]));
-    }
+    });
+
+    // Wait for both tasks to complete
+    let _ = tokio::try_join!(read_task, write_task);
 
     Ok(())
 }
